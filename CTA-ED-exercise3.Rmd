@@ -1,0 +1,335 @@
+---
+title: "CTA-ED-exercise3"
+author: "Yiru Fang"
+date: "2026-03-03"
+output: html_document
+---
+
+## Setup 
+
+load the packages
+
+```{r, echo=F}
+library(kableExtra)
+```
+
+```{r, message=F}
+library(readr) # more informative and easy way to import data
+library(quanteda) # includes functions to implement Lexicoder
+library(quanteda.textstats) # for estimating similarity and complexity measures
+library(stringdist) # for basic character-based distance measures
+library(dplyr) #for wrangling data
+library(tibble) #for wrangling data
+library(ggplot2) #for visualization
+library(tidyr) # for reshaping data (pivot_longer)
+```
+
+For this example we'll be using data from the 2017-2018 Theresa May Cabinet in the UK. The data are tweets by members of this cabinet. 
+
+```{r}
+tweets  <- readRDS(gzcon(url("https://github.com/cjbarrie/CTA-ED/blob/main/data/comparison-complexity/cabinet_tweets.rds?raw=true")))
+```
+
+And we see that the data contain three variables: "username," which is the username of the MP in question; "tweet," which is the text of the given tweet, and "date" in days in yyyy-mm-dd format. 
+
+```{r}
+head(tweets)
+```
+
+And there are 24 MPs whose tweets we're examining. 
+
+```{r}
+unique(tweets$username)
+
+length(unique(tweets$username))
+```
+
+## Generate document feature matrix
+
+In order to use the `quanteda` package and its accompanying `quanteda.textstats` package, we need to reformat the data into a quanteda "corpus" object. To do this we just need to specify the text we're interested in as well as any associated document-level variables in which we're interested. 
+
+We can do this as follows. 
+
+```{r}
+#make corpus object, specifying tweet as text field
+tweets_corpus <- corpus(tweets, text_field = "tweet")
+
+#add in username document-level information
+docvars(tweets_corpus, "username") <- tweets$username
+
+tweets_corpus
+```
+
+reformat the data into a document feature matrix.
+
+```{r}
+dfmat <- dfm(tokens(tweets_corpus, remove_punct = TRUE)) %>%
+  dfm_remove(pattern = stopwords("english"))
+
+dfmat
+```
+
+
+## Exercise 1
+Compute Euclidean and Manhattan distances between MPs and Theresa May
+
+```{r}
+# Group tweets by username so that each MP becomes one document
+dfmat_grouped <- dfm_group(dfmat,
+                           groups = docvars(dfmat, "username"))
+
+# Convert counts to proportions
+dfmat_grouped <- dfm_weight(dfmat_grouped, scheme = "prop")
+```
+We aggregate all tweets by each MP into a single document so that we compare politicians rather than individual tweets.
+
+```{r}
+# Compute Euclidean distance between documents
+euclid_dist <- textstat_dist(dfmat_grouped,
+                             margin = "documents",
+                             method = "euclidean")
+```
+Euclidean distance measures straight-line distance between document vectors in high-dimensional space.
+Higher values = more different language use.
+
+```{r}
+# Compute Manhattan distance between documents
+manhattan_dist <- textstat_dist(dfmat_grouped,
+                                margin = "documents",
+                                method = "manhattan")
+```
+Manhattan distance sums the absolute differences between word frequencies across documents.
+It is often more robust to outliers than Euclidean distance.
+
+```{r}
+## Extract Theresa May comparisons
+# Convert to matrix
+euclid_mat <- as.matrix(euclid_dist)
+manhattan_mat <- as.matrix(manhattan_dist)
+
+# Find row corresponding to Theresa May
+may_row <- which(rownames(euclid_mat) == "theresa_may")
+
+# Extract distances between Theresa May and other MPs
+euclid_may <- euclid_mat[may_row, -may_row]
+
+# Find row corresponding to Theresa May
+may_row <- which(rownames(manhattan_mat) == "theresa_may") 
+
+# Extract distances between Theresa May and other MPs
+manhattan_may <- manhattan_mat[may_row, -may_row]
+
+# Create dataframe
+other_users <- rownames(euclid_mat)[-may_row]
+
+dist_df <- data.frame(
+  username = other_users,
+  euclidean = euclid_may,
+  manhattan = manhattan_may
+)
+```
+
+```{r}
+# Identify most similar MP
+dist_df %>% arrange(euclidean) %>% head()
+
+# Identify most different MP
+dist_df %>% arrange(desc(euclidean)) %>% head()
+```
+
+```{r}
+dist_long <- dist_df %>%
+  pivot_longer(cols = c(euclidean, manhattan),
+               names_to = "method",
+               values_to = "distance")
+
+ggplot(dist_long, aes(x=reorder(username, distance), y=distance, color=method)) +
+  geom_point() +
+  coord_flip()
+```
+
+
+## Exercise 2
+Estimate at least three additional complexity measures
+
+The article by Schoonvelde et al. (2019) uses Flesch-Kincaid. We now compare other readability measures.
+
+```{r}
+# Assuming have a character vector of texts:
+texts <- as.character(tweets_corpus)
+```
+
+```{r}
+# Tokenise and remove punctuation marks (keep only the words)
+toks_all <- tokens(texts, remove_punct = TRUE)
+```
+
+```{r}
+# a) Type-Token Ratio Calculate the TTR for each document as follows: TTR = Number of unique words / Total number of words
+ttr_scores <- sapply(toks_all, function(toks) {
+  tokens_n <- length(toks)                # Total Word Count
+  if (tokens_n == 0) return(NA)           # Avoid division by zero in empty documents
+  types <- length(unique(toks))           # Unique Word Count
+  types / tokens_n                        # TTR
+})
+```
+
+```{r}
+# b) Shannon Entropy
+shannon_entropy <- function(toks) {
+  tokens_n <- length(toks)
+  if (tokens_n == 0) return(NA)
+  
+  freqs <- table(toks) / tokens_n        # Frequency Probability
+  -sum(freqs * log(freqs))               # Entropy Formula
+}
+
+# Applied to all documents
+entropy_scores <- sapply(toks_all, shannon_entropy)
+```
+
+```{r}
+# c) Average Word Length
+avg_word_length <- function(toks) {
+  tokens_n <- length(toks)
+  if (tokens_n == 0) return(NA)
+  
+  mean(nchar(toks))                      # Average Character Count
+}
+
+avg_len_scores <- sapply(toks_all, avg_word_length)
+```
+
+```{r}
+# Create a corpus object (containing document-level variables)
+corp <- corpus(texts)
+
+# Calculate the Flesch-Kincaid readability score
+# measure (optional) "Flesch.Kincaid" or "Flesch"
+fk_scores <- textstat_readability(corp, measure = "Flesch.Kincaid")
+
+# Extract the score vector
+flesch_kincaid <- fk_scores$Flesch.Kincaid
+```
+
+```{r}
+# summary 
+complexity_df <- data.frame(
+  TTR = ttr_scores,
+  Shannon_Entropy = entropy_scores,
+  Avg_Word_Length = avg_len_scores,
+  Flesch_Kincaid = flesch_kincaid   # Newly Added Comparative Indicators
+)
+
+# Check the previous few lines
+head(complexity_df)
+
+summary(complexity_df)
+```
+
+
+```{r}
+# Correlation analysis: Calculate the correlation coefficient between other indicators and Flesch-Kincaid.
+cor_matrix <- cor(complexity_df, use = "complete.obs")
+print(cor_matrix)
+
+# Visualization: Creating a scatter plot matrix
+pairs(complexity_df, pch = 19, col = rgb(0,0,1,0.5))
+```
+
+
+```{r}
+# Compare MPs vs Theresa May
+is_pm <- grepl("Theresa_May", docnames(tweets_corpus))
+
+aggregate(complexity_df, 
+          by = list(Group = ifelse(is_pm, "PM", "MP")), 
+          mean, na.rm = TRUE)
+```
+
+
+3. (Optional) Similarity Scores by Week
+```{r}
+# Step A — Add week variable
+library(lubridate)                # Date Processing
+
+# extract metadata
+meta <- docvars(tweets_corpus)
+
+# create week variable
+meta$week <- floor_date(as.Date(meta$date), unit = "week")
+
+# assign back to corpus
+docvars(tweets_corpus) <- meta
+```
+
+```{r}
+# Step B — Create Clean dfm
+# Tokenize and remove punctuation, symbols and numbers.
+toks <- tokens(tweets_corpus,
+               remove_punct = TRUE,
+               remove_symbols = TRUE,
+               remove_numbers = TRUE)
+
+# Create DFM (Automatically Calculate Word Frequency)
+dfm_all <- dfm(toks)
+
+# remove rare words
+dfm_all <- dfm_trim(dfm_all, min_termfreq = 5)
+
+head(docvars(dfm_all))
+```
+
+```{r}
+# Step C — Loop Through Weeks & Compute Cosine Similarity
+library(proxy)
+
+# Obtain all unique weeks (sorted)
+weeks <- sort(unique(docvars(dfm_all)$week))
+
+# Initialize the result data frame
+results <- data.frame(
+  week = weeks,
+  cosine_similarity = NA_real_   # placeholder
+)
+
+# For each weekly cycle
+for (i in seq_along(weeks)) {
+  
+  current_week <- weeks[i]
+  
+  # subset to this week
+  dfm_week <- dfm_subset(dfm_all, week == current_week)
+  
+  # split PM vs MPs
+  # Use dfm_group to combine the documents within the same group into a "virtual document"
+  dfm_grouped <- dfm_group(dfm_week,
+                            groups = ifelse(docvars(dfm_week)$username == "theresa_may",
+                                            "PM", "MP"))
+  
+  # Only when both groups are present (that is, there are both PM posts and MPs posts in this week) will the similarity be calculated.
+  if (ndoc(dfm_grouped) == 2) {
+    # Calculate the cosine similarity between the two documents (PM vector and MP vector)
+    sim <- textstat_simil(dfm_grouped, method = "cosine")
+    # Extract the similarity value (the element in the first row and second column of the matrix)
+    results$cosine_similarity[i] <- as.numeric(sim[1,2])
+  }
+  # Otherwise, keep it as NA (indicating that the calculation cannot be performed for this week)
+}
+```
+
+```{r}
+ggplot(results, aes(x = week, y = cosine_similarity)) +
+  geom_line(color = "steelblue", size = 1) +          # Line Chart
+  geom_point(color = "steelblue", size = 2) +         # dot mark
+  labs(title = "Cosine similarity between the tweets of MPs and Theresa May on a weekly basis",
+       x = "weeks", y = "cosine similarity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate the x-axis labels to avoid overlapping
+```
+
+```{r}
+summary(results$cosine_similarity)
+sum(!is.na(results$cosine_similarity))
+```
+
